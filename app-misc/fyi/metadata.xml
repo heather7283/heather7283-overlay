@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+  <maintainer type="person">
+    <email>heather7283@protonmail.com</email>
+    <name>heather7283</name>
+  </maintainer>
+  <upstream>
+    <maintainer status="active">
+      <name>Daniel Eklöf</name>
+    </maintainer>
+    <remote-id type="codeberg">dnkl/fyi</remote-id>
+  </upstream>
+</pkgmetadata>
