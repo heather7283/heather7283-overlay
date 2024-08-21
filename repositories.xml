@@ -1,0 +1,14 @@
+<?xml version="1.0" ?>
+<repositories version="1.0">
+  <repo quality="experimental" status="unofficial">
+    <name>heather7283-overlay</name>
+      <description lang="en">heather's custom gentoo overlay</description>
+        <homepage>https://github.com/heather7283/heather7283-overlay</homepage>
+        <owner type="person">
+          <name>heather7283</name>
+          <email>heather7283@protonmail.com</email>
+        </owner>
+        <source type="git">git://github.com/heather7283/heather7283-overlay.git</source>
+        <feed>https://github.com/heather7283/heather7283-overlay/commits/master.atom</feed>
+  </repo>
+</repositories>
