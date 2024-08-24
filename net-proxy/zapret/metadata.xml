@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<maintainer type="person">
+		<email>heather7283@protonmail.com</email>
+		<name>heather7283</name>
+	</maintainer>
+	<use>
+		<flag name="tpws">Install tpws binary</flag>
+		<flag name="nfqws">Install nfqws binary</flag>
+		<flag name="ip2net">Install ip2net binary</flag>
+		<flag name="mdig">Install mdig binary</flag>
+	</use>
+	<upstream>
+		<remote-id type="github">bol-van/zapret</remote-id>
+	</upstream>
+</pkgmetadata>
