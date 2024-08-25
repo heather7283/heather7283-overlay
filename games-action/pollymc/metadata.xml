@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM 'http://www.gentoo.org/dtd/metadata.dtd'>
+<pkgmetadata>
+	<maintainer type="person">
+		<email>heather7283@protonmail.org</email>
+		<name>heather7283</name>
+	</maintainer>
+    <use>
+        <flag name="qt6">Use Qt 6 libraries</flag>
+    </use>
+	<longdescription>DRM-free Prism Launcher fork with support for custom auth servers.</longdescription>
+</pkgmetadata>
