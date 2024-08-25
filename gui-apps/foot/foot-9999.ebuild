@@ -56,16 +56,13 @@ src_configure() {
         $(meson_use themes)
 	)
 	meson_src_configure -Ddefault-terminfo=foot -Dterminfo-base-name=foot-extra
-
-	sed 's|@bindir@|/usr/bin|g' "${S}"/foot-server.service.in > foot-server.service || die
 }
 
 src_compile() {
     if use pgo; then
         ./pgo/pgo.sh full-headless-sway . "${BUILD_DIR}" \
             --prefix=/usr \
-            --wrap-mode=nodownload \
-            -Dterminfo=disabled || die
+            --wrap-mode=nodownload || die
     else
         meson_src_compile
     fi
@@ -78,6 +75,4 @@ src_install() {
 	# foot unconditionally installs CHANGELOG.md, README.md and LICENSE.
 	# we handle this via DOCS and dodoc instead.
 	rm -rv "${ED}/usr/share/doc/${PN}" || die
-
-	systemd_douserunit foot-server.service "${S}"/foot-server.socket
 }
