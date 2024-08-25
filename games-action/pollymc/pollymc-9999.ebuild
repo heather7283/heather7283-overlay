@@ -11,11 +11,12 @@ DESCRIPTION="DRM-free Prism Launcher fork"
 if [[ ${PV} == 9999 ]]; then
 	inherit git-r3
 
-	EGIT_REPO_URI="
-		https://github.com/fn2006/PollyMC
-	"
+	EGIT_REPO_URI="https://github.com/fn2006/PollyMC.git"
 
-	EGIT_SUBMODULES=( 'depends/libnbtplusplus' )
+	EGIT_SUBMODULES=(
+		'libraries/libnbtplusplus'
+		'libraries/cmark'
+	)
 fi
 
 # Apache-2.0 for MultiMC (PolyMC is forked from it)
