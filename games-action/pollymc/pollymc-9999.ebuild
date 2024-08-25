@@ -84,9 +84,24 @@ RDEPEND="
 src_prepare() {
 	cmake_src_prepare
 
+	local java="$(java-config -f)"
+	local java_version=${java//[^0-9]/}
+	if [[ ${java_version} -ge 20 ]]; then
+		elog "Java 20 and up has dropped binary compatibility with java 7."
+		elog "${PN} is being compiled with java ${java_version}."
+		elog "The sources will be patched to build binary compatible with"
+		elog "java 8 instead of java 7. This may cause issues with very old"
+		elog "Minecraft versions and/or older forge versions."
+		elog
+		elog "If you experience any problems, install an older java compiler"
+		elog "and select it with \"eselect java\", then recompile ${PN}."
+		eapply "${FILESDIR}/${PN}-openjdk21.patch"
+	fi
+
 	# Prevent conflicting with the user's flags
-	# See https://bugs.gentoo.org/848765 for more info
+	# See https://bugs.gentoo.org/848765 and https://bugs.gentoo.org/911858 for more info
 	sed -i -e 's/-Werror//' -e 's/-D_FORTIFY_SOURCE=2//' CMakeLists.txt || die 'Failed to remove -Werror and -D_FORTIFY_SOURCE via sed'
+	sed -i -e "/CMAKE_CXX_FLAGS_RELEASE/d" CMakeLists.txt || die 'Failed to remove "CMAKE_CXX_FLAGS_RELEASE" from CMakeLists via sed'
 }
 
 src_configure(){
