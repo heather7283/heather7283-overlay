@@ -41,6 +41,8 @@ BDEPEND="
 	dev-util/wayland-scanner
 "
 
+BUILD_DIR="${S}/build"
+
 src_prepare() {
 	default
 	# disable the systemd dep, we install the unit file manually
@@ -60,7 +62,7 @@ src_configure() {
 
 src_compile() {
     if use pgo; then
-        ./pgo/pgo.sh full-headless-sway . "${BUILD_DIR}" \
+        ./pgo/pgo.sh full-headless-sway "${S}" "${BUILD_DIR}" \
             --prefix=/usr \
             --wrap-mode=nodownload || die
     else
