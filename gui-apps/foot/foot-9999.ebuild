@@ -1,6 +1,6 @@
 EAPI=8
 
-inherit meson xdg systemd
+inherit meson xdg
 
 DESCRIPTION="Fast, lightweight and minimalistic Wayland terminal emulator"
 HOMEPAGE="https://codeberg.org/dnkl/foot"
