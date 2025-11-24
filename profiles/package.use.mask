@@ -1,0 +1,4 @@
+# PGO started failing with some obscure sandbox error
+gui-apps/foot pgo
+# PGO started failing with some obscure sandbox error
+gui-apps/foot-layer-shell pgo
