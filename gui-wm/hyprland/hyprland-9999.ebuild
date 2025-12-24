@@ -1,6 +1,6 @@
 EAPI=8
 
-inherit meson toolchain-funcs
+inherit cmake toolchain-funcs
 
 DESCRIPTION="A dynamic tiling Wayland compositor that doesn't sacrifice on its looks"
 HOMEPAGE="https://github.com/hyprwm/Hyprland"
@@ -17,7 +17,7 @@ fi
 
 LICENSE="BSD"
 SLOT="0"
-IUSE="X qtutils systemd hyprpm"
+IUSE="X systemd uwsm hyprpm test"
 
 # hyprpm (hyprland plugin manager) requires the dependencies at runtime
 # so that it can clone, compile and install plugins.
@@ -32,27 +32,31 @@ HYPRPM_RDEPEND="
 "
 RDEPEND="
 	${HYPRPM_RDEPEND}
+
+	>=gui-libs/aquamarine-0.9.3
+	>=dev-libs/hyprlang-0.6.7
+	>=gui-libs/hyprcursor-0.1.7
+	>=gui-libs/hyprutils-0.11.0
+	>=dev-libs/hyprgraphics-0.1.6
+
+	>=x11-libs/libxkbcommon-1.11.0
+	>=dev-libs/wayland-1.22.90
+
 	dev-cpp/tomlplusplus
 	dev-libs/glib:2
-	dev-libs/hyprlang
-	dev-libs/libinput:=
-	dev-libs/hyprgraphics:=
+	>=dev-libs/libinput-1.28
 	dev-libs/re2:=
 	>=dev-libs/udis86-1.7.2
-	>=dev-libs/wayland-1.22.90
-	>=gui-libs/aquamarine-0.8.0
-	>=gui-libs/hyprcursor-0.1.9
-	>=gui-libs/hyprutils-0.5.2:=
 	media-libs/libglvnd
 	media-libs/mesa
 	sys-apps/util-linux
 	x11-libs/cairo
 	x11-libs/libdrm
-	x11-libs/libxkbcommon
 	x11-libs/pango
 	x11-libs/pixman
 	x11-libs/libXcursor
-	qtutils? ( gui-libs/hyprland-qtutils )
+    dev-cpp/muParser
+
 	X? (
 		x11-libs/libxcb:0=
 		x11-base/xwayland
@@ -64,7 +68,7 @@ DEPEND="
 	${RDEPEND}
 	dev-cpp/glaze
 	>=dev-libs/hyprland-protocols-0.6.0
-	>=dev-libs/wayland-protocols-1.41
+	>=dev-libs/wayland-protocols-1.45
 "
 BDEPEND="
 	|| ( >=sys-devel/gcc-15:* >=llvm-core/clang-18:* )
@@ -72,6 +76,7 @@ BDEPEND="
 	dev-build/cmake
 	>=dev-util/hyprwayland-scanner-0.3.10
 	virtual/pkgconfig
+    test? ( dev-cpp/gtest )
 "
 
 pkg_setup() {
@@ -89,10 +94,13 @@ pkg_setup() {
 }
 
 src_configure() {
-	local emesonargs=(
-		$(meson_feature systemd)
-		$(meson_feature X xwayland)
-		$(meson_feature hyprpm)
+	local mycmakeargs=(
+        -DNO_XWAYLAND=$(usex X no yes)
+        -DNO_SYSTEMD=$(usex systemd no yes)
+        -DNO_UWSM=$(usex uwsm no yes)
+        -DNO_HYPRPM=$(usex hyprpm no yes)
+        -DBUILD_TESTING=$(usex test)
 	)
-	meson_src_configure
+
+	cmake_src_configure
 }
