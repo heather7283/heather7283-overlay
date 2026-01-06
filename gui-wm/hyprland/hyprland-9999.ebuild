@@ -38,6 +38,7 @@ RDEPEND="
 	>=gui-libs/hyprcursor-0.1.7
 	>=gui-libs/hyprutils-0.11.0
 	>=dev-libs/hyprgraphics-0.1.6
+    dev-libs/hyprwire
 
 	>=x11-libs/libxkbcommon-1.11.0
 	>=dev-libs/wayland-1.22.90
