@@ -31,3 +31,11 @@ BDEPEND="
     dev-util/wayland-scanner
 "
 
+src_install() {
+    meson_src_install
+
+    dodoc README.md
+    docinto examples
+    dodoc examples/{README.md,bwm{,hk}rc}
+}
+
