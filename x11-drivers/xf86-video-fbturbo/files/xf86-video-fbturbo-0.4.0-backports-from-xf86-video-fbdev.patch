@@ -1,0 +1,693 @@
+From a5e698f117ee19c1da8c0d7ccb79e0d997dff6eb Mon Sep 17 00:00:00 2001
+From: Siarhei Siamashka <siarhei.siamashka@gmail.com>
+Date: Mon, 4 Apr 2016 07:04:45 +0300
+Subject: [PATCH 1/7] Framebuffer readback assembly code for AArch64
+
+On a PINE64 board (ARM Cortex-A53), this provides ~180 MB/s
+speed for the framebuffer readback. For comparison, the normal
+memcpy operation in cached buffers runs at around ~1200 MB/s.
+
+Such read back speed is actually not very fast and is borderline
+usable. With a 1920x1080 32bpp screen resolution, this results in
+something like ~20 FPS scrolling.
+
+Benchmark vs. shadow framebuffer (1920x1080 32bpp):
+
+  == Shadow framebuffer in xf86-video-fbdev ==
+
+     $ wget http://mirror.its.dal.ca/gutenberg/3/2/0/3/32032/32032.txt
+     $ time DISPLAY=:0 xterm +j -maximized -e cat 32032.txt
+
+     real 0m43.909s
+     user 0m0.820s
+     sys  0m0.300s
+
+     $ DISPLAY=:0 x11perf -scroll500 -copywinwin500 -copypixwin500 -copywinpix500
+
+     15000 trep @   1.8460 msec (   542.0/sec): Scroll 500x500 pixels
+     12000 trep @   2.2629 msec (   442.0/sec): Copy 500x500 from window to window
+     12000 trep @   2.2096 msec (   453.0/sec): Copy 500x500 from pixmap to window
+     14000 trep @   1.9740 msec (   507.0/sec): Copy 500x500 from window to pixmap
+
+  == Direct framebuffer readback in xf86-video-fbturbo ==
+
+     $ wget http://mirror.its.dal.ca/gutenberg/3/2/0/3/32032/32032.txt
+     $ time DISPLAY=:0 xterm +j -maximized -e cat 32032.txt
+
+     real 2m5.741s
+     user 0m0.390s
+     sys  0m0.190s
+
+     $ DISPLAY=:0 x11perf -scroll500 -copywinwin500 -copypixwin500 -copywinpix500
+
+      4500 trep @   5.9201 msec (   169.0/sec): Scroll 500x500 pixels
+      6000 trep @   5.9211 msec (   169.0/sec): Copy 500x500 from window to window
+     18000 trep @   1.5341 msec (   652.0/sec): Copy 500x500 from pixmap to window
+      4000 trep @   6.4657 msec (   155.0/sec): Copy 500x500 from window to pixmap
+
+  ==
+
+The direct framebuffer access without the shadow framebuffer layer
+makes scrolling and moving windows slower. But copying from pixmaps
+to windows becomes faster. In the real world, copying from offscreen
+pixmaps to windows is much more important, because it is one of the
+performance bottlenecks for almost every X11 application. While
+reading back from the framebuffer is only used for a few very
+specialized tasks (scrolling/moving windows and making screenshots).
+
+On 32-bit ARM systems, the uncached framebuffer readback used to
+perform better. Even the Cortex-A53 running in 32-bit mode can
+do framebuffer readback at more than 300 MB/s:
+    https://github.com/ssvb/tinymembench/wiki/PINE64-(Allwinner-A64)
+
+Scrolling/moving windows still can be accelerated by the kernel
+(via DMA, a dedicated 2D accelerator or some other method) and
+hooked into xf86-video-fbturbo.
+
+Signed-off-by: Siarhei Siamashka <siarhei.siamashka@gmail.com>
+---
+ src/Makefile.am   |  1 +
+ src/aarch64_asm.S | 98 +++++++++++++++++++++++++++++++++++++++++++++++
+ src/cpu_backend.c | 24 +++++++++++-
+ src/cpuinfo.c     | 14 +++++--
+ src/fbdev.c       |  2 +-
+ 5 files changed, 133 insertions(+), 6 deletions(-)
+ create mode 100644 src/aarch64_asm.S
+
+diff --git a/src/Makefile.am b/src/Makefile.am
+index a3faea2..1d25bf2 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -32,6 +32,7 @@ fbturbo_drv_la_SOURCES = \
+          compat-api.h \
+          uthash.h \
+          arm_asm.S \
++         aarch64_asm.S \
+          cpuinfo.c \
+          cpuinfo.h \
+          cpu_backend.c \
+diff --git a/src/aarch64_asm.S b/src/aarch64_asm.S
+new file mode 100644
+index 0000000..0440122
+--- /dev/null
++++ b/src/aarch64_asm.S
+@@ -0,0 +1,98 @@
++/*
++ * Copyright © 2016 Siarhei Siamashka <siarhei.siamashka@gmail.com>
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice (including the next
++ * paragraph) shall be included in all copies or substantial portions of the
++ * Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++ * DEALINGS IN THE SOFTWARE.
++ */
++
++/* Prevent the stack from becoming executable */
++#if defined(__linux__) && defined(__ELF__)
++.section .note.GNU-stack,"",%progbits
++#endif
++
++#ifdef __aarch64__
++
++    .cpu cortex-a53+fp+simd
++    .text
++    .align 2
++
++/******************************************************************************/
++
++.macro asm_function function_name
++    .global \function_name
++#ifdef __ELF__
++    .hidden \function_name
++    .type \function_name, %function
++#endif
++.func \function_name
++\function_name:
++.endm
++
++/******************************************************************************/
++
++asm_function aligned_fetch_fbmem_to_scratch_neon
++    SIZE        .req x0
++    DST         .req x1
++    SRC         .req x2
++
++    subs        SIZE, SIZE, #128
++    blt         1f
++0:
++    ldp         q0,  q1, [SRC, #(0 * 32)]
++    ldp         q2,  q3, [SRC, #(1 * 32)]
++    stp         q0,  q1, [DST, #(0 * 32)]
++    stp         q2,  q3, [DST, #(1 * 32)]
++    ldp         q0,  q1, [SRC, #(2 * 32)]
++    ldp         q2,  q3, [SRC, #(3 * 32)]
++    add         SRC, SRC, #128
++    stp         q0,  q1, [DST, #(2 * 32)]
++    stp         q2,  q3, [DST, #(3 * 32)]
++    add         DST, DST, #128
++    subs        SIZE, SIZE, #128
++    bge         0b
++1:
++    tst         SIZE, #64
++    beq         1f
++    ldp         q0,  q1, [SRC, #(0 * 32)]
++    ldp         q2,  q3, [SRC, #(1 * 32)]
++    add         SRC, SRC, #64
++    stp         q0,  q1, [DST, #(0 * 32)]
++    stp         q2,  q3, [DST, #(1 * 32)]
++    add         DST, DST, #64
++1:
++    tst         SIZE, #32
++    beq         1f
++    ldp         q0,  q1, [SRC, #(0 * 32)]
++    add         SRC, SRC, #32
++    stp         q0,  q1, [DST, #(0 * 32)]
++    add         DST, DST, #32
++1:
++    tst         SIZE, #31
++    beq         1f
++    ldp         q0, q1, [SRC]
++    stp         q0, q1, [DST]
++1:
++    ret
++
++    .unreq      SIZE
++    .unreq      DST
++    .unreq      SRC
++.endfunc
++
++#endif
+diff --git a/src/cpu_backend.c b/src/cpu_backend.c
+index b7eada0..2796c5b 100644
+--- a/src/cpu_backend.c
++++ b/src/cpu_backend.c
+@@ -27,7 +27,7 @@
+ #include "cpuinfo.h"
+ #include "cpu_backend.h"
+ 
+-#ifdef __arm__
++#if defined(__arm__) || defined(__aarch64__)
+ 
+ #ifdef __GNUC__
+ #define always_inline inline __attribute__((always_inline))
+@@ -47,6 +47,16 @@ writeback_scratch_to_mem_arm(int size, void *dst, const void *src)
+     memcpy_armv5te(dst, src, size);
+ }
+ 
++#ifdef __aarch64__
++static always_inline void
++writeback_scratch_to_mem_memcpy(int size, void *dst, const void *src)
++{
++    memcpy(dst, src, size);
++}
++
++#define writeback_scratch_to_mem_neon writeback_scratch_to_mem_memcpy
++#endif
++
+ #define SCRATCHSIZE 2048
+ 
+ /*
+@@ -114,6 +124,8 @@ twopass_memmove_neon(void *dst, const void *src, size_t size)
+                     writeback_scratch_to_mem_neon);
+ }
+ 
++#ifdef __arm__
++
+ static void
+ twopass_memmove_vfp(void *dst, const void *src, size_t size)
+ {
+@@ -130,6 +142,8 @@ twopass_memmove_arm(void *dst, const void *src, size_t size)
+                     writeback_scratch_to_mem_arm);
+ }
+ 
++#endif
++
+ static void
+ twopass_blt_8bpp(int        width,
+                  int        height,
+@@ -226,6 +240,8 @@ overlapped_blt_neon(void     *self,
+                           twopass_memmove_neon);
+ }
+ 
++#ifdef __arm__
++
+ static int
+ overlapped_blt_vfp(void     *self,
+                    uint32_t *src_bits,
+@@ -270,6 +286,8 @@ overlapped_blt_arm(void     *self,
+ 
+ #endif
+ 
++#endif
++
+ /* An empty, always failing implementation */
+ static int
+ overlapped_blt_noop(void     *self,
+@@ -322,6 +340,10 @@ cpu_backend_t *cpu_backend_init(uint8_t *uncached_buffer,
+     }
+ #endif
+ 
++#ifdef __aarch64__
++    ctx->blt2d.overlapped_blt = overlapped_blt_neon;
++#endif
++
+     return ctx;
+ }
+ 
+diff --git a/src/cpuinfo.c b/src/cpuinfo.c
+index 55e1c97..2b122e9 100644
+--- a/src/cpuinfo.c
++++ b/src/cpuinfo.c
+@@ -93,8 +93,10 @@ static int parse_proc_cpuinfo(cpuinfo_t *cpuinfo)
+         }
+         if ((val = cpuinfo_match_prefix(buffer, "Features"))) {
+             cpuinfo->has_arm_edsp = find_feature(val, "edsp");
+-            cpuinfo->has_arm_vfp  = find_feature(val, "vfp");
+-            cpuinfo->has_arm_neon = find_feature(val, "neon");
++            cpuinfo->has_arm_vfp  = find_feature(val, "vfp") ||
++                                    find_feature(val, "fp");
++            cpuinfo->has_arm_neon = find_feature(val, "neon") ||
++                                    find_feature(val, "asimd");
+             cpuinfo->has_arm_wmmx = find_feature(val, "iwmmxt");
+         }
+         else if ((val = cpuinfo_match_prefix(buffer, "CPU implementer"))) {
+@@ -105,7 +107,9 @@ static int parse_proc_cpuinfo(cpuinfo_t *cpuinfo)
+             }
+         }
+         else if ((val = cpuinfo_match_prefix(buffer, "CPU architecture"))) {
+-            if (sscanf(val, "%i", &cpuinfo->arm_architecture) != 1) {
++            if (strncmp(val, "AArch64", 7) == 0) {
++                cpuinfo->arm_architecture = 8;
++            } else if (sscanf(val, "%i", &cpuinfo->arm_architecture) != 1) {
+                 fclose(fd);
+                 free(buffer);
+                 return 0;
+@@ -158,7 +162,9 @@ cpuinfo_t *cpuinfo_init()
+         return cpuinfo;
+     }
+ 
+-    if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xC0F) {
++    if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xD03) {
++        cpuinfo->processor_name = strdup("ARM Cortex-A53");
++    } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xC0F) {
+         cpuinfo->processor_name = strdup("ARM Cortex-A15");
+     } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xC09) {
+         if (cpuinfo->has_arm_neon)
+diff --git a/src/fbdev.c b/src/fbdev.c
+index 2bbee6e..48c4a5a 100644
+--- a/src/fbdev.c
++++ b/src/fbdev.c
+@@ -884,7 +884,7 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
+ 	 */
+ 	useBackingStore = xf86ReturnOptValBool(fPtr->Options, OPTION_USE_BS,
+ 	                                       !fPtr->shadowFB);
+-#ifndef __arm__
++#if !(defined(__arm__) || defined(__aarch64__))
+ 	/*
+ 	 * right now we can only make "smart" decisions on ARM hardware,
+ 	 * everything else (for example x86) would take a performance hit
+
+From 206a37157a8d8d89b47c7cffb93b5aef8ee67b5e Mon Sep 17 00:00:00 2001
+From: Sandino Araico Sanchez <sandino@sandino.net>
+Date: Tue, 11 Dec 2018 21:50:50 -0600
+Subject: [PATCH 2/7] =?UTF-8?q?Fix:=20implicit=20declaration=20of=20functi?=
+ =?UTF-8?q?on=20=E2=80=98shadowUpdateRotatePackedWeak=E2=80=99?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ src/fbdev.c | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/src/fbdev.c b/src/fbdev.c
+index 48c4a5a..da7b22d 100644
+--- a/src/fbdev.c
++++ b/src/fbdev.c
+@@ -664,6 +664,7 @@ FBDevCreateScreenResources(ScreenPtr pScreen)
+     ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+     FBDevPtr fPtr = FBDEVPTR(pScrn);
+     Bool ret;
++    void (*update)(ScreenPtr, shadowBufPtr);
+ 
+     pScreen->CreateScreenResources = fPtr->CreateScreenResources;
+     ret = pScreen->CreateScreenResources(pScreen);
+@@ -674,9 +675,15 @@ FBDevCreateScreenResources(ScreenPtr pScreen)
+ 
+     pPixmap = pScreen->GetScreenPixmap(pScreen);
+ 
+-    if (!shadowAdd(pScreen, pPixmap, fPtr->rotate ?
+-		   shadowUpdateRotatePackedWeak() : shadowUpdatePackedWeak(),
+-		   FBDevWindowLinear, fPtr->rotate, NULL)) {
++    if (fPtr->shadow24)
++        update = fbdevUpdate32to24;
++    else if (fPtr->rotate)
++        update = fbdevUpdateRotatePacked;
++    else
++        update = fbdevUpdatePacked;
++
++    if (!shadowAdd(pScreen, pPixmap, update, 
++    		FBDevWindowLinear, fPtr->rotate, NULL)) {
+ 	return FALSE;
+     }
+ 
+
+From 78976dbcd5da2683878a5a61f1422961c2cefbab Mon Sep 17 00:00:00 2001
+From: Sandino Araico Sanchez <sandino@sandino.net>
+Date: Tue, 11 Dec 2018 21:58:47 -0600
+Subject: [PATCH 3/7] =?UTF-8?q?Removed:=20error:=20=E2=80=98struct=20<anon?=
+ =?UTF-8?q?ymous>=E2=80=99=20has=20no=20member=20named=20=E2=80=98shadow24?=
+ =?UTF-8?q?=E2=80=99?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ src/fbdev.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/src/fbdev.c b/src/fbdev.c
+index da7b22d..4ffdc9d 100644
+--- a/src/fbdev.c
++++ b/src/fbdev.c
+@@ -675,9 +675,7 @@ FBDevCreateScreenResources(ScreenPtr pScreen)
+ 
+     pPixmap = pScreen->GetScreenPixmap(pScreen);
+ 
+-    if (fPtr->shadow24)
+-        update = fbdevUpdate32to24;
+-    else if (fPtr->rotate)
++    if (fPtr->rotate)
+         update = fbdevUpdateRotatePacked;
+     else
+         update = fbdevUpdatePacked;
+
+From 4a05429fdc18f10b9866c175af14a4932277578f Mon Sep 17 00:00:00 2001
+From: Sandino Araico Sanchez <sandino@sandino.net>
+Date: Tue, 11 Dec 2018 22:02:23 -0600
+Subject: [PATCH 4/7] =?UTF-8?q?Removed:=20error:=20=E2=80=98fbdevUpdateRot?=
+ =?UTF-8?q?atePacked=E2=80=99=20undeclared?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ src/fbdev.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/fbdev.c b/src/fbdev.c
+index 4ffdc9d..9489886 100644
+--- a/src/fbdev.c
++++ b/src/fbdev.c
+@@ -675,9 +675,13 @@ FBDevCreateScreenResources(ScreenPtr pScreen)
+ 
+     pPixmap = pScreen->GetScreenPixmap(pScreen);
+ 
+-    if (fPtr->rotate)
++#if 0    
++    if (fPtr->shadow24)
++        update = fbdevUpdate32to24;
++    else if (fPtr->rotate)
+         update = fbdevUpdateRotatePacked;
+     else
++#endif
+         update = fbdevUpdatePacked;
+ 
+     if (!shadowAdd(pScreen, pPixmap, update, 
+
+From fdd232b3d9efaf5d691dddfd55acf4337bcc1300 Mon Sep 17 00:00:00 2001
+From: Sandino Araico Sanchez <sandino@sandino.net>
+Date: Tue, 11 Dec 2018 22:32:52 -0600
+Subject: [PATCH 5/7] Merge xf86-video-fbdev-0.5.0
+
+---
+ src/fbdev.c      | 108 ++++++++++++++++++++++++++++++++++++++++++++++-
+ src/fbdev_priv.h |   1 +
+ 2 files changed, 107 insertions(+), 2 deletions(-)
+
+diff --git a/src/fbdev.c b/src/fbdev.c
+index 9489886..b5dfa48 100644
+--- a/src/fbdev.c
++++ b/src/fbdev.c
+@@ -77,6 +77,10 @@
+ #include <pciaccess.h>
+ #endif
+ 
++#if GET_ABI_MAJOR(ABI_VIDEODRV_VERSION) > 23
++#define HAVE_SHADOW_3224
++#endif
++
+ static Bool debug = 0;
+ 
+ #define TRACE_ENTER(str) \
+@@ -173,6 +177,7 @@ typedef enum {
+ 	OPTION_USE_BS,
+ 	OPTION_FORCE_BS,
+ 	OPTION_XV_OVERLAY,
++	OPTION_DEBUG
+ } FBDevOpts;
+ 
+ static const OptionInfoRec FBDevOptions[] = {
+@@ -269,6 +274,35 @@ FBDevIdentify(int flags)
+ 	xf86PrintChipsets(FBDEV_NAME, "driver for framebuffer", FBDevChipsets);
+ }
+ 
++static Bool
++fbdevSwitchMode(ScrnInfoPtr pScrn, DisplayModePtr mode)
++{
++    return fbdevHWSwitchMode(pScrn, mode);
++}
++
++static void
++fbdevAdjustFrame(ScrnInfoPtr pScrn, int x, int y)
++{
++    fbdevHWAdjustFrame(pScrn, x, y);
++}
++
++static Bool
++fbdevEnterVT(ScrnInfoPtr pScrn)
++{
++    return fbdevHWEnterVT(pScrn);
++}
++
++static void
++fbdevLeaveVT(ScrnInfoPtr pScrn)
++{
++    fbdevHWLeaveVT(pScrn);
++}
++
++static ModeStatus
++fbdevValidMode(ScrnInfoPtr pScrn, DisplayModePtr mode, Bool verbose, int flags)
++{
++    return fbdevHWValidMode(pScrn, mode, verbose, flags);
++}
+ 
+ #ifdef XSERVER_LIBPCIACCESS
+ static Bool FBDevPciProbe(DriverPtr drv, int entity_num,
+@@ -467,6 +501,40 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
+ 	if (!fbdevHWInit(pScrn,NULL,xf86FindOptionValue(fPtr->pEnt->device->options,"fbdev")))
+ 		return FALSE;
+ 	default_depth = fbdevHWGetDepth(pScrn,&fbbpp);
++#if 0 /* TODO: Not sure if merging this too */
+++
+++	if (default_depth == 8) do {
+++	    /* trust the command line */
+++	    if (xf86FbBpp > 0 || xf86Depth > 0)
+++		break;
+++
+++	    /* trust the config file's Screen stanza */
+++	    if (pScrn->confScreen->defaultfbbpp > 0 ||
+++		pScrn->confScreen->defaultdepth > 0)
+++		break;
+++
+++	    /* trust our Device stanza in the config file */
+++	    if (xf86FindOption(fPtr->pEnt->device->options, "DefaultDepth") ||
+++		xf86FindOption(fPtr->pEnt->device->options, "DefaultFbBpp"))
+++		break;
+++
+++	    /* otherwise, lol no */
+++	    xf86DrvMsg(pScrn->scrnIndex, X_INFO,
+++		       "Console is 8bpp, defaulting to 32bpp\n");
+++	    default_depth = 24;
+++	    fbbpp = 32;
+++	} while (0);
+++
+++        fPtr->shadow24 = FALSE;
+++#ifdef HAVE_SHADOW_3224
+++        /* okay but 24bpp is awful */
+++        if (fbbpp == 24) {
+++            fPtr->shadow24 = TRUE;
+++            fbbpp = 32;
+++        }
+++#endif
+++
++#endif
+ 	if (!xf86SetDepthBpp(pScrn, default_depth, default_depth, fbbpp,
+ 			     Support24bppFb | Support32bppFb | SupportConvert32to24 | SupportConvert24to32))
+ 		return FALSE;
+@@ -656,6 +724,25 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
+ 	return TRUE;
+ }
+ 
++static void
++fbdevUpdate32to24(ScreenPtr pScreen, shadowBufPtr pBuf)
++{
++#ifdef HAVE_SHADOW_3224
++    shadowUpdate32to24(pScreen, pBuf);
++#endif
++}
++
++static void
++fbdevUpdateRotatePacked(ScreenPtr pScreen, shadowBufPtr pBuf)
++{
++    shadowUpdateRotatePacked(pScreen, pBuf);
++}
++
++static void
++fbdevUpdatePacked(ScreenPtr pScreen, shadowBufPtr pBuf)
++{
++    shadowUpdatePacked(pScreen, pBuf);
++}
+ 
+ static Bool
+ FBDevCreateScreenResources(ScreenPtr pScreen)
+@@ -675,13 +762,11 @@ FBDevCreateScreenResources(ScreenPtr pScreen)
+ 
+     pPixmap = pScreen->GetScreenPixmap(pScreen);
+ 
+-#if 0    
+     if (fPtr->shadow24)
+         update = fbdevUpdate32to24;
+     else if (fPtr->rotate)
+         update = fbdevUpdateRotatePacked;
+     else
+-#endif
+         update = fbdevUpdatePacked;
+ 
+     if (!shadowAdd(pScreen, pPixmap, update, 
+@@ -708,6 +793,23 @@ FBDevShadowInit(ScreenPtr pScreen)
+     return TRUE;
+ }
+ 
++static void
++fbdevLoadPalette(ScrnInfoPtr pScrn, int num, int *i, LOCO *col, VisualPtr pVis)
++{
++    fbdevHWLoadPalette(pScrn, num, i, col, pVis);
++}
++
++static void
++fbdevDPMSSet(ScrnInfoPtr pScrn, int mode, int flags)
++{
++    fbdevHWDPMSSet(pScrn, mode, flags);
++}
++
++static Bool
++fbdevSaveScreen(ScreenPtr pScreen, int mode)
++{
++    return fbdevHWSaveScreen(pScreen, mode);
++}
+ 
+ static Bool
+ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
+@@ -988,7 +1090,9 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
+ 	  xf86DrvMsg(pScrn->scrnIndex, X_INFO, "display rotated; disabling DGA\n");
+ 	  xf86DrvMsg(pScrn->scrnIndex, X_INFO, "using driver rotation; disabling "
+ 			                "XRandR\n");
++#if GET_ABI_MAJOR(ABI_VIDEODRV_VERSION) < 24
+ 	  xf86DisableRandR();
++#endif
+ 	  if (pScrn->bitsPerPixel == 24)
+ 	    xf86DrvMsg(pScrn->scrnIndex, X_WARNING, "rotation might be broken at 24 "
+                                              "bits per pixel\n");
+diff --git a/src/fbdev_priv.h b/src/fbdev_priv.h
+index 6a6e4ce..fa1cae0 100644
+--- a/src/fbdev_priv.h
++++ b/src/fbdev_priv.h
+@@ -44,6 +44,7 @@ typedef struct {
+ 	int				lineLength;
+ 	int				rotate;
+ 	Bool				shadowFB;
++	Bool				shadow24;
+ 	void				*shadow;
+ 	CloseScreenProcPtr		CloseScreen;
+ 	CreateScreenResourcesProcPtr	CreateScreenResources;
+
+From 979107b697bfa6ef10382f8e151ad33732f5b988 Mon Sep 17 00:00:00 2001
+From: Sandino Araico Sanchez <sandino@sandino.net>
+Date: Tue, 11 Dec 2018 22:36:12 -0600
+Subject: [PATCH 6/7] =?UTF-8?q?Fix:=20error:=20redeclaration=20of=20enumer?=
+ =?UTF-8?q?ator=20=E2=80=98OPTION=5FDEBUG=E2=80=99?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ src/fbdev.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/src/fbdev.c b/src/fbdev.c
+index b5dfa48..4c0d1cf 100644
+--- a/src/fbdev.c
++++ b/src/fbdev.c
+@@ -177,7 +177,6 @@ typedef enum {
+ 	OPTION_USE_BS,
+ 	OPTION_FORCE_BS,
+ 	OPTION_XV_OVERLAY,
+-	OPTION_DEBUG
+ } FBDevOpts;
+ 
+ static const OptionInfoRec FBDevOptions[] = {
+
+From 530f5c045e88a45c2beddc2af45f3d56b770f1ac Mon Sep 17 00:00:00 2001
+From: stefan11111 <stefan11111@shitposting.expert>
+Date: Tue, 4 Feb 2025 02:24:33 +0200
+Subject: [PATCH 7/7] fix build
+
+---
+ src/backing_store_tuner.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/backing_store_tuner.c b/src/backing_store_tuner.c
+index 067c05f..b3083ea 100644
+--- a/src/backing_store_tuner.c
++++ b/src/backing_store_tuner.c
+@@ -109,7 +109,7 @@ xPostValidateTree(WindowPtr pWin, WindowPtr pLayerWin, VTKind kind)
+     private->PostValidateTreeNestingLevel++;
+ 
+     /* Disable backing store for the focus window */
+-    if (!private->ForceBackingStore && focusWin->backStorage) {
++    if (!private->ForceBackingStore && focusWin->backingStore) {
+         DebugMsg("Disable backing store for the focus window 0x%x\n",
+                  (unsigned int)focusWin->drawable.id);
+         pScreen->backingStoreSupport = Always;
+@@ -125,7 +125,7 @@ xPostValidateTree(WindowPtr pWin, WindowPtr pLayerWin, VTKind kind)
+     /* And enable backing store for all the other children of root */
+     curWin = pScreen->root->firstChild;
+     while (curWin) {
+-        if (!curWin->backStorage && (private->ForceBackingStore ||
++        if (!curWin->backingStore && (private->ForceBackingStore ||
+                                      curWin != focusWin)) {
+             DebugMsg("Enable backing store for window 0x%x\n",
+                      (unsigned int)curWin->drawable.id);
+@@ -158,7 +158,7 @@ xReparentWindow(WindowPtr pWin, WindowPtr pPriorParent)
+     }
+ 
+     /* We only want backing store set for direct children of root */
+-    if (pPriorParent == pScreen->root && pWin->backStorage) {
++    if (pPriorParent == pScreen->root && pWin->backingStore) {
+         DebugMsg("Reparent window 0x%x from root, disabling backing store\n",
+                  (unsigned int)pWin->drawable.id);
+         pScreen->backingStoreSupport = Always;
