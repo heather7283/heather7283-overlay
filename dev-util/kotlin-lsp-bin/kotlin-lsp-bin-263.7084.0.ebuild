@@ -8,7 +8,7 @@ BASE_NAME="kotlin-server-${PV}"
 
 DESCRIPTION="Kotlin Language Server"
 HOMEPAGE="https://github.com/Kotlin/kotlin-lsp"
-SRC_URI="https://download-cdn.jetbrains.com/language-server/kotlin-server/${PV}/${BASE_NAME}${ARCH_SUFFIX}.tar.gz -> ${P}.tar.gz"
+SRC_URI="https://download.jetbrains.com/language-server/kotlin-server/${PV}/${BASE_NAME}${ARCH_SUFFIX}.tar.gz -> ${P}.tar.gz"
 S="$WORKDIR"
 
 LICENSE="Apache-2.0"
